@@ -4634,5 +4634,105 @@ think-kind calls into Thinking."
                     :acp-notification '((some-key . "some-value")))
                   '((adapted . t) (some-key . "some-value"))))))
 
+(ert-deftest agent-shell--config-installed-p-test ()
+  "Test `agent-shell--config-installed-p' reflects `executable-find' and caches."
+  (let ((agent-shell--installed-agent-cache nil)
+        (installed-config (agent-shell-make-agent-config
+                           :identifier 'installed-agent
+                           :client-maker (lambda (_buffer) '((:command . "installed-cli")))))
+        (missing-config (agent-shell-make-agent-config
+                         :identifier 'missing-agent
+                         :client-maker (lambda (_buffer) '((:command . "missing-cli"))))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command &rest _) (equal command "installed-cli"))))
+      (should (agent-shell--config-installed-p installed-config))
+      (should-not (agent-shell--config-installed-p missing-config)))
+    ;; Result is cached: a later call answers from the cache rather than
+    ;; re-invoking `executable-find', so a change in installed state
+    ;; doesn't affect the outcome until the cache is cleared.
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) nil)))
+      (should (agent-shell--config-installed-p installed-config)))
+    (agent-shell-clear-installed-agent-cache)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) nil)))
+      (should-not (agent-shell--config-installed-p installed-config)))))
+
+(ert-deftest agent-shell--config-installed-p-unresolvable-command-test ()
+  "Test `agent-shell--config-installed-p' treats an unresolvable command as installed.
+
+A config whose `:client-maker' errors (e.g. incomplete authentication
+setup) or has none at all can't be evaluated, so it must not be hidden
+by `agent-shell-hide-uninstalled-agents'."
+  (let ((agent-shell--installed-agent-cache nil))
+    (should (agent-shell--config-installed-p
+             (agent-shell-make-agent-config
+              :identifier 'erroring-agent
+              :client-maker (lambda (_buffer) (error "Missing authentication")))))
+    (should (agent-shell--config-installed-p
+             (agent-shell-make-agent-config :identifier 'no-client-maker-agent)))))
+
+(ert-deftest agent-shell--installed-agent-configs-test ()
+  "Test `agent-shell--installed-agent-configs' filters to installed agents."
+  (let ((agent-shell--installed-agent-cache nil)
+        (agent-shell-agent-configs
+         (list (agent-shell-make-agent-config
+                :identifier 'installed-agent
+                :client-maker (lambda (_buffer) '((:command . "installed-cli"))))
+               (agent-shell-make-agent-config
+                :identifier 'missing-agent
+                :client-maker (lambda (_buffer) '((:command . "missing-cli")))))))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command &rest _) (equal command "installed-cli"))))
+      (should (equal (mapcar (lambda (config) (map-elt config :identifier))
+                             (agent-shell--installed-agent-configs))
+                     '(installed-agent))))))
+
+(ert-deftest agent-shell-select-config-hides-uninstalled-agents-test ()
+  "Test `agent-shell-select-config' only lists installed agents when enabled."
+  (let ((agent-shell-hide-uninstalled-agents t)
+        (agent-shell-show-config-icons nil)
+        (agent-shell--installed-agent-cache nil)
+        (agent-shell-agent-configs
+         (list (agent-shell-make-agent-config
+                :identifier 'installed-agent
+                :mode-line-name "Installed"
+                :client-maker (lambda (_buffer) '((:command . "installed-cli"))))
+               (agent-shell-make-agent-config
+                :identifier 'missing-agent
+                :mode-line-name "Missing"
+                :client-maker (lambda (_buffer) '((:command . "missing-cli"))))))
+        (candidates nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command &rest _) (equal command "installed-cli")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq candidates (complete-with-action t collection "" nil))
+                 (car candidates))))
+      (agent-shell-select-config))
+    (should (equal candidates '("Installed")))))
+
+(ert-deftest agent-shell-select-config-falls-back-when-none-installed-test ()
+  "Test `agent-shell-select-config' lists every agent if none are installed.
+
+An empty picker would leave the user stuck, so filtering only applies
+when it doesn't eliminate every choice."
+  (let ((agent-shell-hide-uninstalled-agents t)
+        (agent-shell-show-config-icons nil)
+        (agent-shell--installed-agent-cache nil)
+        (agent-shell-agent-configs
+         (list (agent-shell-make-agent-config
+                :identifier 'missing-agent
+                :mode-line-name "Missing"
+                :client-maker (lambda (_buffer) '((:command . "missing-cli"))))))
+        (candidates nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq candidates (complete-with-action t collection "" nil))
+                 (car candidates))))
+      (agent-shell-select-config))
+    (should (equal candidates '("Missing")))))
+
 (provide 'agent-shell-tests)
 ;;; agent-shell-tests.el ends here

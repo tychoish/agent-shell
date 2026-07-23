@@ -678,6 +678,66 @@ edits to the underlying makers take effect without rebuilding the list."
               entry))
           agent-shell-agent-configs))
 
+(defcustom agent-shell-hide-uninstalled-agents nil
+  "When non-nil, `agent-shell-select-config' only lists installed agents.
+
+An agent is considered installed when its `:client-maker' resolves to
+an executable found on `exec-path'.  Since resolving this involves
+invoking each agent's `:client-maker', results are cached in
+`agent-shell--installed-agent-cache'.  Call
+`agent-shell-clear-installed-agent-cache' after installing or removing
+an agent's executable so the picker picks up the change.
+
+When every known agent is uninstalled, the picker falls back to
+listing all agents rather than showing an empty prompt."
+  :type 'boolean
+  :group 'agent-shell)
+
+(defvar agent-shell--installed-agent-cache nil
+  "Alist caching installed status per agent `:identifier'.
+
+See `agent-shell-hide-uninstalled-agents'.")
+
+(defun agent-shell-clear-installed-agent-cache ()
+  "Clear `agent-shell--installed-agent-cache'.
+
+Call this after installing or removing an agent's executable so
+`agent-shell-hide-uninstalled-agents' reflects the change."
+  (interactive)
+  (setq agent-shell--installed-agent-cache nil))
+
+(defun agent-shell--config-command (config)
+  "Return the executable CONFIG's `:client-maker' resolves to, or nil.
+
+Calling `:client-maker' only builds a client alist (e.g. via
+`acp-make-client'); it does not start a process.  Errors raised by
+incomplete authentication setup are ignored, since they are unrelated
+to whether the backing executable is installed.
+
+Example: for the Claude Code config, returns \"claude-agent-acp\"."
+  (ignore-errors
+    (and-let* ((maker (map-elt config :client-maker))
+               (client (funcall maker (current-buffer))))
+      (map-elt client :command))))
+
+(defun agent-shell--config-installed-p (config)
+  "Return non-nil if CONFIG's backing executable is found on `exec-path'.
+
+Results are cached in `agent-shell--installed-agent-cache' keyed by
+CONFIG's `:identifier'.  A config whose command cannot be resolved is
+treated as installed, so this never hides an agent it can't evaluate."
+  (let ((identifier (map-elt config :identifier)))
+    (if-let* ((cached (assq identifier agent-shell--installed-agent-cache)))
+        (cdr cached)
+      (let* ((command (agent-shell--config-command config))
+             (installed (if command (and (executable-find command) t) t)))
+        (push (cons identifier installed) agent-shell--installed-agent-cache)
+        installed))))
+
+(defun agent-shell--installed-agent-configs ()
+  "Return `agent-shell--resolved-agent-configs' filtered to installed agents."
+  (seq-filter #'agent-shell--config-installed-p (agent-shell--resolved-agent-configs)))
+
 (defcustom agent-shell-preferred-agent-config nil
   "Default agent to use for all new shells.
 
@@ -1504,8 +1564,14 @@ Returns nil if no icon should be displayed."
   "Display PROMPT to select an agent config from `agent-shell-agent-configs'.
 
 When `agent-shell-preferred-agent-config' is set, its configuration is
-listed first and offered as the default selection."
-  (let* ((configs (agent-shell--resolved-agent-configs))
+listed first and offered as the default selection.
+
+When `agent-shell-hide-uninstalled-agents' is non-nil, only agents
+whose executable is found on `exec-path' are listed."
+  (let* ((configs (if agent-shell-hide-uninstalled-agents
+                      (or (agent-shell--installed-agent-configs)
+                          (agent-shell--resolved-agent-configs))
+                    (agent-shell--resolved-agent-configs)))
          (preferred (agent-shell--resolve-preferred-config))
          (configs (if preferred
                       (cons preferred
